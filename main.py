@@ -8,84 +8,83 @@ def create_folder(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def download_file(url, base_folder, sub_folder):
+downloaded_files = set()
+
+def download_file(url, base_folder):
+    if url in downloaded_files:
+        print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
+        return
+    downloaded_files.add(url)
     response = requests.get(url)
     if response.status_code == 200:
         parsed_url = urlparse(url)
         file_name = os.path.basename(parsed_url.path)
-        file_path = os.path.join(base_folder, sub_folder, file_name)
-        create_folder(os.path.dirname(file_path))
+        folder_path = os.path.join(base_folder, os.path.dirname(parsed_url.path).lstrip('/'))
+        create_folder(folder_path)
+        file_path = os.path.join(folder_path, file_name)
         with open(file_path, 'wb') as file:
             file.write(response.content)
         print(colored(f"Downloaded: {file_path}", 'green'))
     else:
         print(colored(f"Failed to download: {url}", 'red'))
 
-def get_sub_folder(url, base_url):
-    parsed_base_url = urlparse(base_url)
-    parsed_url = urlparse(url)
-    base_path = os.path.dirname(parsed_base_url.path)
-    relative_path = parsed_url.path.replace(base_path, '').lstrip('/')
-    return os.path.dirname(relative_path)
 
-def download_assets(page_url, download_folder):
-    create_folder(download_folder)
+def is_valid_link(link):
+    # Ignore links with ID fragments
+    return not urlparse(link).fragment
 
+def scrape_page(page_url, download_folder, visited_urls):
+    if page_url in visited_urls:
+        return
+
+    visited_urls.add(page_url)
     response = requests.get(page_url)
+    if response.status_code != 200:
+        print(colored(f"Failed to fetch page: {page_url}", 'red'))
+        return
+
     soup = BeautifulSoup(response.text, 'html.parser')
 
     # Save the main HTML page
-    html_file_path = os.path.join(download_folder, os.path.basename(urlparse(page_url).path))
+    parsed_url = urlparse(page_url)
+    base_path = os.path.dirname(parsed_url.path).lstrip('/')
+    create_folder(os.path.join(download_folder, base_path))
+    html_file_path = os.path.join(download_folder, base_path, os.path.basename(parsed_url.path) or 'index.html')
     with open(html_file_path, 'w', encoding='utf-8') as file:
         file.write(soup.prettify())
     print(colored(f"Downloaded: {html_file_path}", 'green'))
 
-    # Download CSS files
-    for link in soup.find_all('link', rel='stylesheet'):
-        css_url = urljoin(page_url, link['href'])
-        sub_folder = get_sub_folder(css_url, page_url)
-        download_file(css_url, download_folder, sub_folder)
+    # Download CSS, JS, images, and font files
+    for tag, attr in [('link', 'href'), ('script', 'src'), ('img', 'src')]:
+        for resource in soup.find_all(tag):
+            resource_url = resource.get(attr)
+            if resource_url:
+                full_url = urljoin(page_url, resource_url)
+                if is_valid_link(full_url):
+                    download_file(full_url, download_folder)
 
-        # Check for font files in the CSS
-        css_response = requests.get(css_url)
-        css_soup = BeautifulSoup(css_response.text, 'html.parser')
-        for font_url in css_soup.find_all('@font-face'):
-            font_url = font_url.get('src')
-            if font_url:
-                font_url = urljoin(css_url, font_url.split('url(')[-1].split(')')[0].replace('\'', '').replace('\"', ''))
-                sub_folder = get_sub_folder(font_url, page_url)
-                download_file(font_url, download_folder, sub_folder)
-
-    # Download JavaScript files
-    for script in soup.find_all('script', src=True):
-        js_url = urljoin(page_url, script['src'])
-        sub_folder = get_sub_folder(js_url, page_url)
-        download_file(js_url, download_folder, sub_folder)
-
-    # Download font files
-    for link in soup.find_all('link', rel='preload', as_='font'):
-        font_url = urljoin(page_url, link['href'])
-        sub_folder = get_sub_folder(font_url, page_url)
-        download_file(font_url, download_folder, sub_folder)
-
-    # Download images
-    for img in soup.find_all('img', src=True):
-        img_url = urljoin(page_url, img['src'])
-        sub_folder = get_sub_folder(img_url, page_url)
-        download_file(img_url, download_folder, sub_folder)
-    
-    # Download background images from inline styles
+    # Download inline styles' background images
     for div in soup.find_all(style=True):
         style = div['style']
         if 'background' in style or 'background-image' in style:
-            img_url = style.split('url(')[-1].split(')')[0].replace('\'', '').replace('\"', '')
-            img_url = urljoin(page_url, img_url)
-            sub_folder = get_sub_folder(img_url, page_url)
-            download_file(img_url, download_folder, sub_folder)
+            img_url = style.split('url(')[-1].split(')')[0].replace('"', '').replace("'", '')
+            full_url = urljoin(page_url, img_url)
+            if is_valid_link(full_url):
+                download_file(full_url, download_folder)
 
-    print(colored("All assets downloaded.", 'green'))
+    # Recursively download linked HTML pages
+    for link in soup.find_all('a', href=True):
+        href = link['href']
+        full_url = urljoin(page_url, href)
+        if is_valid_link(full_url) and urlparse(full_url).netloc == urlparse(page_url).netloc:
+            scrape_page(full_url, download_folder, visited_urls)
 
-# Meminta input dari pengguna untuk URL
-page_url = input("Masukkan URL halaman untuk mendownload assets: ")
-download_folder = 'downloaded_assets'
-download_assets(page_url, download_folder)
+def main():
+    page_url = input("Masukkan URL halaman untuk memulai scrapping: ").strip()
+    download_folder = 'downloaded_assets'
+    create_folder(download_folder)
+    scrape_page(page_url, download_folder, set())
+    print(colored("Semua sumber daya berhasil diunduh.", 'green'))
+
+if __name__ == "__main__":
+    main()
