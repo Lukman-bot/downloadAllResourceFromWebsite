@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from termcolor import colored
+import re
 
 def create_folder(path):
     if not os.path.exists(path):
@@ -10,19 +11,33 @@ def create_folder(path):
 
 downloaded_files = set()
 
+def normalize_path_case(path):
+    return os.path.normpath(path).lower()
+
+def normalize_url_case(url):
+    parsed = urlparse(url)
+    normalized_path = parsed.path.lower()
+    return urljoin(parsed.geturl(), normalized_path)
+
 def download_file(url, base_folder):
     try:
-        if url in downloaded_files:
+        normalized_url = normalize_url_case(url)
+        if normalized_url in downloaded_files:
             print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
             return
-        downloaded_files.add(url)
+        downloaded_files.add(normalized_url)
+
         response = requests.get(url)
         if response.status_code == 200:
             parsed_url = urlparse(url)
             file_name = os.path.basename(parsed_url.path) or 'index.html'
             folder_path = os.path.join(base_folder, os.path.dirname(parsed_url.path).lstrip('/'))
+            folder_path = normalize_path_case(folder_path)
             create_folder(folder_path)
+
             file_path = os.path.join(folder_path, file_name)
+            file_path = normalize_path_case(file_path)
+
             with open(file_path, 'wb') as file:
                 file.write(response.content)
             print(colored(f"Downloaded: {file_path}", 'green'))
@@ -42,15 +57,30 @@ def parse_css_for_resources(css_file_path, base_url, base_folder):
         with open(css_file_path, 'r', encoding='utf-8') as file:
             css_content = file.read()
 
-        for line in css_content.splitlines():
-            if 'url(' in line:
-                try:
-                    resource_url = line.split('url(')[-1].split(')')[0].replace('"', '').replace("'", '')
-                    full_url = urljoin(base_url, resource_url)
-                    if is_valid_link(full_url):
-                        download_file(full_url, base_folder)
-                except Exception as e:
-                    print(colored(f"Error parsing CSS resource: {line}, {e}", 'red'))
+        # Match URLs in @font-face and url(...) declarations
+        font_face_pattern = r"@font-face\s*{[^}]*src:\s*([^;]+);"
+        url_pattern = r"url\(['\"]?([^'\"]+)['\"]?\)"
+
+        # Handle font-face src declarations
+        for match in re.finditer(font_face_pattern, css_content, re.IGNORECASE):
+            src_declaration = match.group(1)
+            for url_match in re.finditer(url_pattern, src_declaration):
+                resource_url = url_match.group(1)
+                if resource_url.startswith('../'):
+                    resource_url = resource_url.lstrip('../')
+                full_url = urljoin(base_url, resource_url)
+                if is_valid_link(full_url):
+                    download_file(full_url, base_folder)
+
+        # Handle all url(...) declarations (e.g., background images)
+        for match in re.finditer(url_pattern, css_content):
+            resource_url = match.group(1)
+            if resource_url.startswith('../'):
+                resource_url = resource_url.lstrip('../')
+            full_url = urljoin(base_url, resource_url)
+            if is_valid_link(full_url):
+                download_file(full_url, base_folder)
+
     except Exception as e:
         print(colored(f"Error reading CSS file {css_file_path}: {e}", 'red'))
 
@@ -83,10 +113,11 @@ def is_valid_link(link):
 
 def scrape_page(page_url, download_folder, visited_urls):
     try:
-        if page_url in visited_urls:
+        normalized_page_url = normalize_url_case(page_url)
+        if normalized_page_url in visited_urls:
             return
 
-        visited_urls.add(page_url)
+        visited_urls.add(normalized_page_url)
         response = requests.get(page_url)
         if response.status_code != 200:
             print(colored(f"Failed to fetch page (HTTP {response.status_code}): {page_url}", 'red'))
@@ -96,8 +127,11 @@ def scrape_page(page_url, download_folder, visited_urls):
 
         parsed_url = urlparse(page_url)
         base_path = os.path.dirname(parsed_url.path).lstrip('/')
+        base_path = normalize_path_case(base_path)
         create_folder(os.path.join(download_folder, base_path))
+
         html_file_path = os.path.join(download_folder, base_path, os.path.basename(parsed_url.path) or 'index.html')
+        html_file_path = normalize_path_case(html_file_path)
         with open(html_file_path, 'w', encoding='utf-8') as file:
             file.write(soup.prettify())
         print(colored(f"Downloaded: {html_file_path}", 'green'))
@@ -114,14 +148,14 @@ def scrape_page(page_url, download_folder, visited_urls):
             style = div['style']
             if 'url(' in style:
                 try:
-                    img_url = style.split('url(')[-1].split(')')[0].replace('"', '').replace("'", '')
+                    url_pattern = r"url\(['\"]?([^'\"]+)['\"]?\)"
+                    img_url = re.search(url_pattern, style).group(1)
                     full_url = urljoin(page_url, img_url)
                     if is_valid_link(full_url):
                         download_file(full_url, download_folder)
                 except Exception as e:
                     print(colored(f"Error parsing style: {style}, {e}", 'red'))
 
-        # Scraping halaman yang terhubung
         for link in soup.find_all('a', href=True):
             href = link['href']
             full_url = urljoin(page_url, href)
