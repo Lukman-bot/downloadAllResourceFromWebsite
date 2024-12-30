@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 from termcolor import colored
 import re
 import time
+from datetime import datetime
 
 def create_folder(path):
     if not os.path.exists(path):
@@ -21,14 +22,41 @@ def normalize_url_case(url):
     normalized_path = parsed.path.lower()
     return urljoin(parsed.geturl(), normalized_path)
 
-def download_file(url, base_folder, retries=2): # retries = Maksimal Pengulangan
+def is_valid_link(url):
+    parsed = urlparse(url)
+    return bool(parsed.netloc) and bool(parsed.scheme)
+
+def log_message(log_folder, website_url, message):
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    log_file = os.path.join(log_folder, f"{date_str}.log")
+    create_folder(log_folder)
+    
+    with open(log_file, 'a', encoding='utf-8') as log:
+        log_message = f"{message}\n"
+        if "===== Begin" in message and not os.path.getsize(log_file):
+            log.write(log_message)  # Add only the header if the file is empty
+        else:
+            log.write(log_message)
+
+def finalize_log(log_folder, website_url):
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    log_file = os.path.join(log_folder, f"{date_str}.log")
+    with open(log_file, 'a', encoding='utf-8') as log:
+        log.write(f"===== End =====\n")
+
+def log_colored_message(log_folder, website_url, message, color):
+    prefix = {'yellow': '[warning]', 'red': '[danger]', 'cyan': '[info]', 'green': '[success]'}.get(color, '')
+    log_message(log_folder, website_url, f"{prefix} {message}")
+    print(colored(message, color))
+
+def download_file(url, base_folder, retries=1, log_folder=None, website_url=None):
     attempt = 0
     normalized_url = normalize_url_case(url)
 
     while attempt < retries:
         try:
             if normalized_url in downloaded_files:
-                print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
+                log_colored_message(log_folder, website_url, f"Skipped (already downloaded): {url}", 'yellow')
                 return
 
             response = requests.get(url)
@@ -44,33 +72,31 @@ def download_file(url, base_folder, retries=2): # retries = Maksimal Pengulangan
 
                 with open(file_path, 'wb') as file:
                     file.write(response.content)
-                print(colored(f"Downloaded: {file_path}", 'green'))
+                log_colored_message(log_folder, website_url, f"Downloaded: {file_path}", 'green')
 
                 if file_name.endswith('.css'):
-                    parse_css_for_resources(file_path, url, base_folder)
+                    parse_css_for_resources(file_path, url, base_folder, log_folder, website_url)
                 elif file_name.endswith('.js'):
-                    parse_js_for_resources(file_path, url, base_folder)
+                    parse_js_for_resources(file_path, url, base_folder, log_folder, website_url)
 
                 pending_files.discard(normalized_url)
                 downloaded_files.add(normalized_url)
                 return
 
             else:
-                print(colored(f"Failed to download (HTTP {response.status_code}): {url}", 'red'))
+                log_colored_message(log_folder, website_url, f"Failed to download (HTTP {response.status_code}): {url}", 'red')
         except Exception as e:
-            print(colored(f"Error downloading {url}: {e}", 'red'))
-        
+            log_colored_message(log_folder, website_url, f"Error downloading {url}: {e}", 'red')
+
         attempt += 1
         if attempt < retries:
-            for remaining in range(0, 0, -1): # Waktu jeda pengulangan
-                print(colored(f"Retrying ({attempt}/{retries}) for {url} in {remaining} seconds...", 'cyan'), end='\r')
-                time.sleep(1)
-            print(" " * 80, end='\r')
+            log_colored_message(log_folder, website_url, f"Retrying ({attempt}/{retries}) for {url}...", 'cyan')
+            time.sleep(1)
 
-    print(colored(f"Max retries reached for {url}. Skipping.", 'red'))
+    log_colored_message(log_folder, website_url, f"Max retries reached for {url}. Skipping.", 'red')
     pending_files.add(normalized_url)
 
-def parse_css_for_resources(css_file_path, base_url, base_folder):
+def parse_css_for_resources(css_file_path, base_url, base_folder, log_folder, website_url):
     try:
         with open(css_file_path, 'r', encoding='utf-8') as file:
             css_content = file.read()
@@ -84,18 +110,18 @@ def parse_css_for_resources(css_file_path, base_url, base_folder):
                 resource_url = url_match.group(1)
                 full_url = urljoin(base_url, resource_url)
                 if is_valid_link(full_url):
-                    download_file(full_url, base_folder)
+                    download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
 
         for match in re.finditer(url_pattern, css_content):
             resource_url = match.group(1)
             full_url = urljoin(base_url, resource_url)
             if is_valid_link(full_url):
-                download_file(full_url, base_folder)
+                download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
 
     except Exception as e:
-        print(colored(f"Error reading CSS file {css_file_path}: {e}", 'red'))
+        log_colored_message(log_folder, website_url, f"Error reading CSS file {css_file_path}: {e}", 'red')
 
-def parse_js_for_resources(js_file_path, base_url, base_folder):
+def parse_js_for_resources(js_file_path, base_url, base_folder, log_folder, website_url):
     try:
         with open(js_file_path, 'r', encoding='utf-8') as file:
             js_content = file.read()
@@ -109,20 +135,13 @@ def parse_js_for_resources(js_file_path, base_url, base_folder):
                         resource_url = line.split('"')[1] if '"' in line else line.split("'")[1]
                     full_url = urljoin(base_url, resource_url)
                     if is_valid_link(full_url):
-                        download_file(full_url, base_folder)
+                        download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
                 except Exception as e:
-                    print(colored(f"Error parsing JS resource: {line}, {e}", 'red'))
+                    log_colored_message(log_folder, website_url, f"Error parsing JS resource: {line}, {e}", 'red')
     except Exception as e:
-        print(colored(f"Error reading JS file {js_file_path}: {e}", 'red'))
+        log_colored_message(log_folder, website_url, f"Error reading JS file {js_file_path}: {e}", 'red')
 
-def is_valid_link(link):
-    try:
-        return bool(urlparse(link).scheme and urlparse(link).netloc)
-    except Exception as e:
-        print(colored(f"Invalid link {link}: {e}", 'red'))
-        return False
-
-def scrape_page(page_url, download_folder, visited_urls):
+def scrape_page(page_url, download_folder, visited_urls, log_folder):
     try:
         normalized_page_url = normalize_url_case(page_url)
         if normalized_page_url in visited_urls:
@@ -131,10 +150,12 @@ def scrape_page(page_url, download_folder, visited_urls):
         visited_urls.add(normalized_page_url)
         response = requests.get(page_url)
         if response.status_code != 200:
-            print(colored(f"Failed to fetch page (HTTP {response.status_code}): {page_url}", 'red'))
+            log_colored_message(log_folder, page_url, f"Failed to fetch page (HTTP {response.status_code}): {page_url}", 'red')
             return
 
         soup = BeautifulSoup(response.text, 'html.parser')
+
+        log_message(log_folder, page_url, f"===== Begin {page_url} =====")
 
         parsed_url = urlparse(page_url)
         base_path = os.path.dirname(parsed_url.path).lstrip('/')
@@ -145,7 +166,7 @@ def scrape_page(page_url, download_folder, visited_urls):
         html_file_path = normalize_path_case(html_file_path)
         with open(html_file_path, 'w', encoding='utf-8') as file:
             file.write(soup.prettify())
-        print(colored(f"Downloaded: {html_file_path}", 'green'))
+        log_colored_message(log_folder, page_url, f"Downloaded: {html_file_path}", 'green')
 
         for tag, attr in [('link', 'href'), ('script', 'src'), ('img', 'src'), ('video', 'src')]:
             for resource in soup.find_all(tag):
@@ -153,7 +174,7 @@ def scrape_page(page_url, download_folder, visited_urls):
                 if resource_url:
                     full_url = urljoin(page_url, resource_url)
                     if is_valid_link(full_url):
-                        download_file(full_url, download_folder)
+                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url)
 
         for div in soup.find_all(style=True):
             style = div['style']
@@ -163,27 +184,30 @@ def scrape_page(page_url, download_folder, visited_urls):
                     img_url = re.search(url_pattern, style).group(1)
                     full_url = urljoin(page_url, img_url)
                     if is_valid_link(full_url):
-                        download_file(full_url, download_folder)
+                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url)
                 except Exception as e:
-                    print(colored(f"Error parsing style: {style}, {e}", 'red'))
+                    log_colored_message(log_folder, page_url, f"Error parsing style: {style}, {e}", 'red')
 
         for link in soup.find_all('a', href=True):
             href = link['href']
             full_url = urljoin(page_url, href)
             if is_valid_link(full_url) and urlparse(full_url).netloc == urlparse(page_url).netloc:
-                scrape_page(full_url, download_folder, visited_urls)
+                scrape_page(full_url, download_folder, visited_urls, log_folder)
 
         for pending_url in list(pending_files):
-            download_file(pending_url, download_folder)
+            download_file(pending_url, download_folder, log_folder=log_folder, website_url=page_url)
+
+        finalize_log(log_folder, page_url)
 
     except Exception as e:
-        print(colored(f"Error scraping {page_url}: {e}", 'red'))
+        log_colored_message(log_folder, page_url, f"Error scraping {page_url}: {e}", 'red')
 
 def main():
     page_url = input("Masukkan URL halaman untuk memulai scrapping: ").strip()
     download_folder = 'downloaded_assets'
+    log_folder = 'logs'
     create_folder(download_folder)
-    scrape_page(page_url, download_folder, set())
+    scrape_page(page_url, download_folder, set(), log_folder)
     print(colored("Semua sumber daya berhasil diunduh.", 'green'))
 
 if __name__ == "__main__":
