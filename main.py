@@ -4,12 +4,14 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from termcolor import colored
 import re
+import time
 
 def create_folder(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
 downloaded_files = set()
+pending_files = set()
 
 def normalize_path_case(path):
     return os.path.normpath(path).lower()
@@ -19,64 +21,71 @@ def normalize_url_case(url):
     normalized_path = parsed.path.lower()
     return urljoin(parsed.geturl(), normalized_path)
 
-def download_file(url, base_folder):
-    try:
-        normalized_url = normalize_url_case(url)
-        if normalized_url in downloaded_files:
-            print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
-            return
-        downloaded_files.add(normalized_url)
+def download_file(url, base_folder, retries=5):
+    attempt = 0
+    while attempt < retries:
+        try:
+            normalized_url = normalize_url_case(url)
+            if normalized_url in downloaded_files:
+                print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
+                return
+            downloaded_files.add(normalized_url)
 
-        response = requests.get(url)
-        if response.status_code == 200:
-            parsed_url = urlparse(url)
-            file_name = os.path.basename(parsed_url.path) or 'index.html'
-            folder_path = os.path.join(base_folder, os.path.dirname(parsed_url.path).lstrip('/'))
-            folder_path = normalize_path_case(folder_path)
-            create_folder(folder_path)
+            response = requests.get(url)
+            if response.status_code == 200:
+                parsed_url = urlparse(url)
+                file_name = os.path.basename(parsed_url.path) or 'index.html'
+                folder_path = os.path.join(base_folder, os.path.dirname(parsed_url.path).lstrip('/'))
+                folder_path = normalize_path_case(folder_path)
+                create_folder(folder_path)
 
-            file_path = os.path.join(folder_path, file_name)
-            file_path = normalize_path_case(file_path)
+                file_path = os.path.join(folder_path, file_name)
+                file_path = normalize_path_case(file_path)
 
-            with open(file_path, 'wb') as file:
-                file.write(response.content)
-            print(colored(f"Downloaded: {file_path}", 'green'))
+                with open(file_path, 'wb') as file:
+                    file.write(response.content)
+                print(colored(f"Downloaded: {file_path}", 'green'))
 
-            if file_name.endswith('.css'):
-                parse_css_for_resources(file_path, url, base_folder)
-            elif file_name.endswith('.js'):
-                parse_js_for_resources(file_path, url, base_folder)
+                if file_name.endswith('.css'):
+                    parse_css_for_resources(file_path, url, base_folder)
+                elif file_name.endswith('.js'):
+                    parse_js_for_resources(file_path, url, base_folder)
 
-        else:
-            print(colored(f"Failed to download (HTTP {response.status_code}): {url}", 'red'))
-    except Exception as e:
-        print(colored(f"Error downloading {url}: {e}", 'red'))
+                pending_files.discard(normalized_url)
+                return
+
+            else:
+                print(colored(f"Failed to download (HTTP {response.status_code}): {url}", 'red'))
+        except Exception as e:
+            print(colored(f"Error downloading {url}: {e}", 'red'))
+        attempt += 1
+        if attempt < retries:
+            for remaining in range(5, 0, -1):
+                print(colored(f"Retrying ({attempt}/{retries}) for {url} in {remaining} seconds...", 'cyan'), end='\r')
+                time.sleep(1)
+            print(" " * 80, end='\r') 
+
+    print(colored(f"Max retries reached for {url}. Skipping.", 'red'))
+    pending_files.add(normalize_url_case(url))
 
 def parse_css_for_resources(css_file_path, base_url, base_folder):
     try:
         with open(css_file_path, 'r', encoding='utf-8') as file:
             css_content = file.read()
 
-        # Match URLs in @font-face and url(...) declarations
         font_face_pattern = r"@font-face\s*{[^}]*src:\s*([^;]+);"
         url_pattern = r"url\(['\"]?([^'\"]+)['\"]?\)"
 
-        # Handle font-face src declarations
         for match in re.finditer(font_face_pattern, css_content, re.IGNORECASE):
             src_declaration = match.group(1)
             for url_match in re.finditer(url_pattern, src_declaration):
                 resource_url = url_match.group(1)
-                if resource_url.startswith('../'):
-                    resource_url = resource_url.lstrip('../')
                 full_url = urljoin(base_url, resource_url)
                 if is_valid_link(full_url):
                     download_file(full_url, base_folder)
 
-        # Handle all url(...) declarations (e.g., background images)
         for match in re.finditer(url_pattern, css_content):
             resource_url = match.group(1)
-            if resource_url.startswith('../'):
-                resource_url = resource_url.lstrip('../')
             full_url = urljoin(base_url, resource_url)
             if is_valid_link(full_url):
                 download_file(full_url, base_folder)
@@ -161,6 +170,9 @@ def scrape_page(page_url, download_folder, visited_urls):
             full_url = urljoin(page_url, href)
             if is_valid_link(full_url) and urlparse(full_url).netloc == urlparse(page_url).netloc:
                 scrape_page(full_url, download_folder, visited_urls)
+
+        for pending_url in list(pending_files):
+            download_file(pending_url, download_folder)
 
     except Exception as e:
         print(colored(f"Error scraping {page_url}: {e}", 'red'))
