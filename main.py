@@ -21,15 +21,15 @@ def normalize_url_case(url):
     normalized_path = parsed.path.lower()
     return urljoin(parsed.geturl(), normalized_path)
 
-def download_file(url, base_folder, retries=5):
+def download_file(url, base_folder, retries=2): # retries = Maksimal Pengulangan
     attempt = 0
+    normalized_url = normalize_url_case(url)
+
     while attempt < retries:
         try:
-            normalized_url = normalize_url_case(url)
             if normalized_url in downloaded_files:
                 print(colored(f"Skipped (already downloaded): {url}", 'yellow'))
                 return
-            downloaded_files.add(normalized_url)
 
             response = requests.get(url)
             if response.status_code == 200:
@@ -52,21 +52,23 @@ def download_file(url, base_folder, retries=5):
                     parse_js_for_resources(file_path, url, base_folder)
 
                 pending_files.discard(normalized_url)
+                downloaded_files.add(normalized_url)
                 return
 
             else:
                 print(colored(f"Failed to download (HTTP {response.status_code}): {url}", 'red'))
         except Exception as e:
             print(colored(f"Error downloading {url}: {e}", 'red'))
+        
         attempt += 1
         if attempt < retries:
-            for remaining in range(5, 0, -1):
+            for remaining in range(0, 0, -1): # Waktu jeda pengulangan
                 print(colored(f"Retrying ({attempt}/{retries}) for {url} in {remaining} seconds...", 'cyan'), end='\r')
                 time.sleep(1)
-            print(" " * 80, end='\r') 
+            print(" " * 80, end='\r')
 
     print(colored(f"Max retries reached for {url}. Skipping.", 'red'))
-    pending_files.add(normalize_url_case(url))
+    pending_files.add(normalized_url)
 
 def parse_css_for_resources(css_file_path, base_url, base_folder):
     try:
