@@ -22,17 +22,22 @@ def normalize_url_case(url):
     normalized_path = parsed.path.lower()
     return urljoin(parsed.geturl(), normalized_path)
 
-def is_valid_link(url):
+def is_valid_link(url, base_domain=None):
     parsed = urlparse(url)
-    return bool(parsed.netloc) and bool(parsed.scheme)
+    if not bool(parsed.netloc) or not bool(parsed.scheme):
+        return False
+    if base_domain and parsed.netloc != base_domain:
+        return False
+    return True
 
 def log_message(log_folder, website_url, message):
     date_str = datetime.now().strftime('%Y-%m-%d')
     log_file = os.path.join(log_folder, f"{date_str}.log")
     create_folder(log_folder)
-    
+
+    timestamp = datetime.now().strftime('[%H:%M %d-%m-%Y]')
     with open(log_file, 'a', encoding='utf-8') as log:
-        log_message = f"{message}\n"
+        log_message = f"{timestamp}{message}\n"
         if "===== Begin" in message and not os.path.getsize(log_file):
             log.write(log_message)  # Add only the header if the file is empty
         else:
@@ -49,7 +54,7 @@ def log_colored_message(log_folder, website_url, message, color):
     log_message(log_folder, website_url, f"{prefix} {message}")
     print(colored(message, color))
 
-def download_file(url, base_folder, retries=1, log_folder=None, website_url=None):
+def download_file(url, base_folder, retries=1, log_folder=None, website_url=None, base_domain=None):
     attempt = 0
     normalized_url = normalize_url_case(url)
 
@@ -57,6 +62,10 @@ def download_file(url, base_folder, retries=1, log_folder=None, website_url=None
         try:
             if normalized_url in downloaded_files:
                 log_colored_message(log_folder, website_url, f"Skipped (already downloaded): {url}", 'yellow')
+                return
+
+            if not is_valid_link(url, base_domain):
+                log_colored_message(log_folder, website_url, f"Invalid or external URL: {url}", 'yellow')
                 return
 
             response = requests.get(url)
@@ -75,9 +84,9 @@ def download_file(url, base_folder, retries=1, log_folder=None, website_url=None
                 log_colored_message(log_folder, website_url, f"Downloaded: {file_path}", 'green')
 
                 if file_name.endswith('.css'):
-                    parse_css_for_resources(file_path, url, base_folder, log_folder, website_url)
+                    parse_css_for_resources(file_path, url, base_folder, log_folder, website_url, base_domain)
                 elif file_name.endswith('.js'):
-                    parse_js_for_resources(file_path, url, base_folder, log_folder, website_url)
+                    parse_js_for_resources(file_path, url, base_folder, log_folder, website_url, base_domain)
 
                 pending_files.discard(normalized_url)
                 downloaded_files.add(normalized_url)
@@ -96,7 +105,7 @@ def download_file(url, base_folder, retries=1, log_folder=None, website_url=None
     log_colored_message(log_folder, website_url, f"Max retries reached for {url}. Skipping.", 'red')
     pending_files.add(normalized_url)
 
-def parse_css_for_resources(css_file_path, base_url, base_folder, log_folder, website_url):
+def parse_css_for_resources(css_file_path, base_url, base_folder, log_folder, website_url, base_domain):
     try:
         with open(css_file_path, 'r', encoding='utf-8') as file:
             css_content = file.read()
@@ -109,19 +118,19 @@ def parse_css_for_resources(css_file_path, base_url, base_folder, log_folder, we
             for url_match in re.finditer(url_pattern, src_declaration):
                 resource_url = url_match.group(1)
                 full_url = urljoin(base_url, resource_url)
-                if is_valid_link(full_url):
-                    download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
+                if is_valid_link(full_url, base_domain):
+                    download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url, base_domain=base_domain)
 
         for match in re.finditer(url_pattern, css_content):
             resource_url = match.group(1)
             full_url = urljoin(base_url, resource_url)
-            if is_valid_link(full_url):
-                download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
+            if is_valid_link(full_url, base_domain):
+                download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url, base_domain=base_domain)
 
     except Exception as e:
         log_colored_message(log_folder, website_url, f"Error reading CSS file {css_file_path}: {e}", 'red')
 
-def parse_js_for_resources(js_file_path, base_url, base_folder, log_folder, website_url):
+def parse_js_for_resources(js_file_path, base_url, base_folder, log_folder, website_url, base_domain):
     try:
         with open(js_file_path, 'r', encoding='utf-8') as file:
             js_content = file.read()
@@ -134,8 +143,8 @@ def parse_js_for_resources(js_file_path, base_url, base_folder, log_folder, webs
                     else:
                         resource_url = line.split('"')[1] if '"' in line else line.split("'")[1]
                     full_url = urljoin(base_url, resource_url)
-                    if is_valid_link(full_url):
-                        download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url)
+                    if is_valid_link(full_url, base_domain):
+                        download_file(full_url, base_folder, log_folder=log_folder, website_url=website_url, base_domain=base_domain)
                 except Exception as e:
                     log_colored_message(log_folder, website_url, f"Error parsing JS resource: {line}, {e}", 'red')
     except Exception as e:
@@ -143,6 +152,9 @@ def parse_js_for_resources(js_file_path, base_url, base_folder, log_folder, webs
 
 def scrape_page(page_url, download_folder, visited_urls, log_folder):
     try:
+        parsed_base_url = urlparse(page_url)
+        base_domain = parsed_base_url.netloc
+
         normalized_page_url = normalize_url_case(page_url)
         if normalized_page_url in visited_urls:
             return
@@ -173,8 +185,8 @@ def scrape_page(page_url, download_folder, visited_urls, log_folder):
                 resource_url = resource.get(attr)
                 if resource_url:
                     full_url = urljoin(page_url, resource_url)
-                    if is_valid_link(full_url):
-                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url)
+                    if is_valid_link(full_url, base_domain):
+                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url, base_domain=base_domain)
 
         for div in soup.find_all(style=True):
             style = div['style']
@@ -183,19 +195,19 @@ def scrape_page(page_url, download_folder, visited_urls, log_folder):
                     url_pattern = r"url\(['\"]?([^'\"]+)['\"]?\)"
                     img_url = re.search(url_pattern, style).group(1)
                     full_url = urljoin(page_url, img_url)
-                    if is_valid_link(full_url):
-                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url)
+                    if is_valid_link(full_url, base_domain):
+                        download_file(full_url, download_folder, log_folder=log_folder, website_url=page_url, base_domain=base_domain)
                 except Exception as e:
                     log_colored_message(log_folder, page_url, f"Error parsing style: {style}, {e}", 'red')
 
         for link in soup.find_all('a', href=True):
             href = link['href']
             full_url = urljoin(page_url, href)
-            if is_valid_link(full_url) and urlparse(full_url).netloc == urlparse(page_url).netloc:
+            if is_valid_link(full_url, base_domain) and urlparse(full_url).netloc == base_domain:
                 scrape_page(full_url, download_folder, visited_urls, log_folder)
 
         for pending_url in list(pending_files):
-            download_file(pending_url, download_folder, log_folder=log_folder, website_url=page_url)
+            download_file(pending_url, download_folder, log_folder=log_folder, website_url=page_url, base_domain=base_domain)
 
         finalize_log(log_folder, page_url)
 
