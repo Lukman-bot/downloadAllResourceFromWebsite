@@ -61,7 +61,6 @@ def download_file(url, base_folder, retries=1, log_folder=None, website_url=None
     while attempt < retries:
         try:
             if normalized_url in downloaded_files:
-                log_colored_message(log_folder, website_url, f"Skipped (already downloaded): {url}", 'yellow')
                 return
 
             if not is_valid_link(url, base_domain):
@@ -83,13 +82,14 @@ def download_file(url, base_folder, retries=1, log_folder=None, website_url=None
                     file.write(response.content)
                 log_colored_message(log_folder, website_url, f"Downloaded: {file_path}", 'green')
 
+                downloaded_files.add(normalized_url)
+
                 if file_name.endswith('.css'):
                     parse_css_for_resources(file_path, url, base_folder, log_folder, website_url, base_domain)
                 elif file_name.endswith('.js'):
                     parse_js_for_resources(file_path, url, base_folder, log_folder, website_url, base_domain)
 
                 pending_files.discard(normalized_url)
-                downloaded_files.add(normalized_url)
                 return
 
             else:
