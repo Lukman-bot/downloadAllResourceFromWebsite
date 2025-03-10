@@ -1,3 +1,6 @@
 
 /downloaded_assets
 /logs
+
+# Ignore Virtual ENV
+venv/
